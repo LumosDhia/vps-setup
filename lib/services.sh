@@ -14,7 +14,7 @@
 declare -A SERVICES
 SERVICES=(
   # ── Tier 1: Management ────────────────────────────────────────────────────
-  [homarr]="ghcr.io/homarr-labs/homarr:latest|7575|homarr:appdata|SECRET_ENCRYPTION_KEY=1097939ab64487e6072404d50abf337500adc4bf838c628dc0f60612daef3006||/var/run/docker.sock:/var/run/docker.sock|"
+  [homarr]="ghcr.io/homarr-labs/homarr:latest|7575|homarr:appdata|SECRET_ENCRYPTION_KEY=__GENERATE__||/var/run/docker.sock:/var/run/docker.sock|"
   [portainer]="portainer/portainer-ce:latest|9000|portainer:data|||/var/run/docker.sock:/var/run/docker.sock|"
 
   # ── Tier 2: Personal Cloud ────────────────────────────────────────────────
@@ -22,7 +22,7 @@ SERVICES=(
   [nextcloud]="lscr.io/linuxserver/nextcloud:latest|8090|nextcloud|PUID=1000,PGID=1000,TZ=Africa/Tunis|:443||"
 
   # ── Tier 3: Media ─────────────────────────────────────────────────────────
-  [jellyfin]="lscr.io/linuxserver/jellyfin:latest|8096|jellyfin|PUID=1000,PGID=1000,TZ=Africa/Tunis|||"
+  [jellyfin]="lscr.io/linuxserver/jellyfin:latest|8096|jellyfin|PUID=1000,PGID=1000,TZ=Africa/Tunis||${MEDIA_DIR}:/media|"
   [prowlarr]="lscr.io/linuxserver/prowlarr:latest|9696|prowlarr|PUID=1000,PGID=1000,TZ=Africa/Tunis|||"
   [qbittorrent]="lscr.io/linuxserver/qbittorrent:latest|8080|qbittorrent|PUID=1000,PGID=1000,TZ=Africa/Tunis,WEBUI_PORT=8080||${MEDIA_DIR}/downloads:/downloads|"
   [navidrome]="deluan/navidrome:latest|4533|navidrome:data|PUID=1000,PGID=1000,TZ=Africa/Tunis,ND_UILOGINBACKGROUNDURL=https://wallpapercave.com/wp/wp11990842.jpg,ND_DEFAULTTHEME=Catppuccin Macchiato||${MEDIA_DIR}/music:/music|"
@@ -128,7 +128,6 @@ deploy_service() {
   fi
 
   run_cmd+=(-v "${cfg_dir}:${internal_cfg_path}")
-  run_cmd+=(-v "${MEDIA_DIR}:${MEDIA_DIR}")
 
   if [[ -n "$extra_volumes" ]]; then
     local vol_arr ev
@@ -141,7 +140,14 @@ deploy_service() {
   if [[ -n "$extra_env" ]]; then
     local env_arr e
     IFS=',' read -ra env_arr <<< "$extra_env"
-    for e in "${env_arr[@]}"; do run_cmd+=(-e "$e"); done
+    for e in "${env_arr[@]}"; do
+      if [[ "$e" == *=__GENERATE__ ]]; then
+        local key_name="${e%%=*}"
+        e="${key_name}=$(openssl rand -hex 32)"
+        info "Generated random value for ${key_name}."
+      fi
+      run_cmd+=(-e "$e")
+    done
   fi
 
   run_cmd+=("$active_image")
@@ -169,18 +175,22 @@ deploy_service() {
     if [[ -f "$conf_file" ]]; then
       # Stop to ensure it doesn't overwrite our changes
       docker stop "$name" > /dev/null
-      
+
       # Remove any existing entries to avoid duplicates
       sed -i '/WebUI\\HostHeaderValidation/d' "$conf_file"
       sed -i '/WebUI\\CSRFProtection/d' "$conf_file"
-      
+
       # Add bypasses under [Preferences]
       if grep -q "\[Preferences\]" "$conf_file"; then
         sed -i '/\[Preferences\]/a WebUI\\HostHeaderValidation=false\nWebUI\\CSRFProtection=false' "$conf_file"
       else
         echo -e "\n[Preferences]\nWebUI\\HostHeaderValidation=false\nWebUI\\CSRFProtection=false" >> "$conf_file"
       fi
-      
+
+      # Remove stale lock files left by docker stop to prevent single-instance false-positive
+      local qbt_dir; qbt_dir="$(dirname "$conf_file")"
+      rm -f "${qbt_dir}/lockfile" "${qbt_dir}/ipc-socket"
+
       docker start "$name" > /dev/null
       success "qBittorrent security checks bypassed successfully."
     else

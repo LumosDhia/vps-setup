@@ -117,7 +117,8 @@ setup_network() {
 
 setup_firewall() {
   local ssh_port
-  ssh_port=$(ss -tlnp | awk '/sshd/{print $4}' | grep -oP ':\K[0-9]+' | head -1)
+  ssh_port=$(grep -E '^Port ' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1 || true)
+  [[ -z "$ssh_port" ]] && ssh_port=$(ss -tlnp 2>/dev/null | awk '/sshd/{print $4}' | grep -oP ':\K[0-9]+' | head -1 || true)
   ssh_port=${ssh_port:-22}
 
   info "Configuring UFW firewall (SSH: ${ssh_port}, HTTP: 80, HTTPS: 443)..."

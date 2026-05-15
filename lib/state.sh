@@ -15,7 +15,7 @@ state_get() {
 state_set() {
   local key=$1 val=$2
   local tmp; tmp=$(mktemp)
-  jq "${key} = \"${val}\"" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+  jq --arg v "$val" "${key} = \$v" "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
 }
 
 state_set_service() {

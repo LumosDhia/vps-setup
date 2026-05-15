@@ -78,6 +78,10 @@ cmd_up() {
   local -A deploy_ports=()
 
   for c in $choice; do
+    if [[ ! "$c" =~ ^[0-9]+$ ]]; then
+      error "Invalid input: ${c}. Skipping."
+      continue
+    fi
     local idx=$(( c - 1 ))
     local selected="${menu_keys[$idx]:-}"
     if [[ -z "$selected" ]]; then
@@ -95,8 +99,8 @@ cmd_up() {
       continue
     fi
 
-    if docker container inspect "$selected" &>/dev/null; then
-      local d_status; d_status=$(docker inspect -f '{{.State.Status}}' "$selected")
+    local d_status; d_status=$(docker inspect -f '{{.State.Status}}' "$selected" 2>/dev/null || true)
+    if [[ -n "$d_status" ]]; then
       warn "'${selected}' container is currently ${d_status}."
       
       local sub_done=false
@@ -172,7 +176,7 @@ cmd_up() {
   success "External images downloaded."
 
   # Initialize summary array
-  export MULTI_DEPLOY_SUMMARY=()
+  MULTI_DEPLOY_SUMMARY=()
 
   # Launch Stage
   for name in "${deploy_names[@]}"; do
@@ -184,9 +188,12 @@ cmd_up() {
   if [[ "${QBITTORRENT_CHECK_PASSWORD:-}" == "true" ]]; then
     separator
     info "Retrieving temporary qBittorrent admin password..."
-    sleep 5 # Give it more time to log the password
-    local pass
-    pass=$(docker logs qbittorrent 2>&1 | grep -i "password" | grep -v "already" | tail -n 1 | awk -F': ' '{print $2}' | xargs || true)
+    local retries=10 pass=""
+    while [[ -z "$pass" && $retries -gt 0 ]]; do
+      sleep 2
+      pass=$(docker logs qbittorrent 2>&1 | grep -oP 'for this session: \K\S+' | tail -n 1 || true)
+      (( retries-- ))
+    done
     
     if [[ -n "$pass" ]]; then
       MULTI_DEPLOY_SUMMARY+=("      ${ARR} ${YELLOW}qBittorrent Admin Password: ${BOLD}${pass}${NC}")
@@ -246,7 +253,7 @@ cmd_down() {
   [[ -z "$target" ]] && { error "Invalid selection."; pause; return; }
 
   if confirm "Stop and remove '${target}'?"; then
-    run_task "Removing container ${target}" "docker rm -f $target"
+    run_task "Removing container ${target}" "docker rm -f '${target}'"
     state_remove_service "$target"
     success "'${target}' removed."
   fi

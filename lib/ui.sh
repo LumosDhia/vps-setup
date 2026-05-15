@@ -54,7 +54,12 @@ info()    { echo -e "  ${SKY}${ARR}${NC} ${TEXT}${1}${NC}";           echo "[INF
 success() { echo -e "  ${GREEN}${OK}${NC} ${TEXT}${1}${NC}";          echo "[SUCCESS] $(date '+%F %T') | ${1}" >> "$LOG_FILE"; }
 warn()    { echo -e "  ${YELLOW}${WARN}${NC} ${TEXT}${1}${NC}";       echo "[WARN]    $(date '+%F %T') | ${1}" >> "$LOG_FILE"; }
 error()   { echo -e "  ${RED}${ERR}${NC} ${TEXT}${1}${NC}" >&2;       echo "[ERROR]   $(date '+%F %T') | ${1}" >> "$LOG_FILE"; }
-die()     { error "$1"; pause; exit 1; }
+die() {
+  error "$1"
+  printf "\n  ${MAUVE}──${NC} ${BOLD}Press [Enter] to continue${NC}: "
+  read -r _
+  exit 1
+}
 
 # ── Interaction ───────────────────────────────────────────────────────────────
 prompt() {
