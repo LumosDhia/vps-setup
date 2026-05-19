@@ -138,9 +138,12 @@ cmd_up() {
 
     local p
     if ! is_port_free "$default_port"; then
+      local auto_port
+      auto_port=$(find_free_port "$default_port")
       error "Default port ${default_port} for ${selected} is already in use."
-      prompt "Enter a custom port for ${selected}" p
-      [[ -z "$p" ]] && { warn "No port provided for ${selected}. Skipping."; continue; }
+      printf "  ${MAUVE}?${NC} ${BOLD}Port for ${selected}${NC} [${DIM}auto: ${auto_port}${NC}]: "
+      read -r p
+      [[ -z "$p" ]] && p="$auto_port"
     else
       printf "  ${MAUVE}?${NC} ${BOLD}Port for ${selected}${NC} [${DIM}default: ${default_port}${NC}]: "
       read -r p
@@ -302,46 +305,67 @@ cmd_proxy() {
 # ── Health Dashboard ──────────────────────────────────────────────────────────
 
 cmd_status() {
-  show_header
-  label "Health Dashboard"
-  echo
+  while true; do
+    show_header
+    label "Health Dashboard"
+    echo
 
-  printf "  ${BOLD}${SUBTEXT}%-22s %-12s %-20s %s${NC}\n" "CONTAINER" "STATUS" "PORTS" "IMAGE"
-  separator
-    docker ps --format '{{.Names}}|{{.Status}}|{{.Image}}|{{.Ports}}' 2>/dev/null \
-    | while IFS='|' read -r name status image ports; do
-        local col=$GREEN
-        [[ "$status" != Up* ]] && col=$RED
-        image_short="${image##*/}"
-        
-        # Extract all unique host ports (both 0.0.0.0 and [::]) and sort them numerically
-        local p; p=$(echo "$ports" | grep -oP '(?<=0.0.0.0:)[0-9-]+(?=->)|(?<=\[::\]:)[0-9-]+(?=->)' | sort -un | paste -sd ',' -)
-        [[ -z "$p" ]] && p="N/A"
-        
-        # Clean status string: remove anything in parentheses (health checks) 
-        # and limit to the core "Up X time" part
-        local cleaner_status; cleaner_status=$(echo "$status" | sed 's/ (.*//' | cut -c1-12)
-        
-        printf "  ${col}%-22s${NC} %-12s ${TEAL}%-20s${NC} ${DIM}%s${NC}\n" \
-          "$name" "$cleaner_status" "$p" "$image_short"
-      done
+    printf "  ${BOLD}${SUBTEXT}%3s  %-22s %-12s %-18s %s${NC}\n" "#" "CONTAINER" "STATUS" "PORTS" "IMAGE"
+    separator
 
-  separator
-  local total used free
-  total=$(free -m | awk '/^Mem:/{print $2}')
-  used=$(free -m  | awk '/^Mem:/{print $3}')
-  free=$(free -m  | awk '/^Mem:/{print $7}')
-  echo
-  printf "  ${SAPPHIRE}RAM${NC}  total: ${BOLD}%sMB${NC}  used: ${YELLOW}%sMB${NC}  free: ${GREEN}%sMB${NC}\n" \
-    "$total" "$used" "$free"
+    local i=1
+    declare -a _status_containers=()
 
-  local disk_used disk_free
-  disk_used=$(df -h / | awk 'NR==2{print $3}')
-  disk_free=$(df -h / | awk 'NR==2{print $4}')
-  printf "  ${SAPPHIRE}DISK${NC} used: ${YELLOW}%s${NC}  free: ${GREEN}%s${NC}\n" "$disk_used" "$disk_free"
+    while IFS='|' read -r name status image ports; do
+      _status_containers+=("$name")
+      local col=$GREEN
+      [[ "$status" != Up* ]] && col=$RED
+      local image_short="${image##*/}"
 
-  show_footer
-  pause
+      local p; p=$(echo "$ports" | grep -oP '(?<=0.0.0.0:)[0-9-]+(?=->)|(?<=\[::\]:)[0-9-]+(?=->)' | sort -un | paste -sd ',' -)
+      [[ -z "$p" ]] && p="N/A"
+
+      local cleaner_status; cleaner_status=$(echo "$status" | sed 's/ (.*//' | cut -c1-12)
+
+      printf "  ${MAUVE}%2d)${NC} ${col}%-22s${NC} %-12s ${TEAL}%-18s${NC} ${DIM}%s${NC}\n" \
+        "$i" "$name" "$cleaner_status" "$p" "$image_short"
+      (( i++ ))
+    done < <(docker ps --format '{{.Names}}|{{.Status}}|{{.Image}}|{{.Ports}}' 2>/dev/null)
+
+    separator
+    local total used free
+    total=$(free -m | awk '/^Mem:/{print $2}')
+    used=$(free -m  | awk '/^Mem:/{print $3}')
+    free=$(free -m  | awk '/^Mem:/{print $7}')
+    echo
+    printf "  ${SAPPHIRE}RAM${NC}  total: ${BOLD}%sMB${NC}  used: ${YELLOW}%sMB${NC}  free: ${GREEN}%sMB${NC}\n" \
+      "$total" "$used" "$free"
+
+    local disk_used disk_free
+    disk_used=$(df -h / | awk 'NR==2{print $3}')
+    disk_free=$(df -h / | awk 'NR==2{print $4}')
+    printf "  ${SAPPHIRE}DISK${NC} used: ${YELLOW}%s${NC}  free: ${GREEN}%s${NC}\n" "$disk_used" "$disk_free"
+
+    show_footer
+    echo
+
+    if [[ ${#_status_containers[@]} -eq 0 ]]; then
+      pause
+      return
+    fi
+
+    printf "  ${MAUVE}?${NC} ${BOLD}Inspect container (1-${#_status_containers[@]}) or [Enter] to return${NC}: "
+    read -r pick
+
+    [[ -z "$pick" || "$pick" == "0" ]] && return
+
+    if [[ "$pick" =~ ^[0-9]+$ ]] && (( pick >= 1 && pick <= ${#_status_containers[@]} )); then
+      show_container_info "${_status_containers[$((pick-1))]}"
+    else
+      error "Invalid selection."
+      sleep 1
+    fi
+  done
 }
 
 # ── System Doctor ─────────────────────────────────────────────────────────────

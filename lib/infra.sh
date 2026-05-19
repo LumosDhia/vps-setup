@@ -68,9 +68,19 @@ handle_user() {
 
 # ── Docker ────────────────────────────────────────────────────────────────────
 
+_ensure_docker_access() {
+  if ! groups "$USER" | grep -qw docker; then
+    sudo usermod -aG docker "$USER"
+  fi
+  if command -v setfacl &>/dev/null; then
+    sudo setfacl -m user:"$USER":rw /var/run/docker.sock 2>/dev/null || true
+  fi
+}
+
 install_docker() {
   if command -v docker &>/dev/null; then
     success "Docker already installed: $(docker --version | awk '{print $3}' | tr -d ',')"
+    _ensure_docker_access
     return
   fi
 
@@ -93,11 +103,7 @@ https://download.docker.com/linux/${ID} ${VERSION_CODENAME} stable" \
     sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin && \
     sudo systemctl enable --now docker"
 
-  sudo usermod -aG docker "$USER"
-  if command -v setfacl &>/dev/null; then
-    info "Applying immediate Docker permissions via setfacl..."
-    sudo setfacl -m user:"$USER":rw /var/run/docker.sock 2>/dev/null || true
-  fi
+  _ensure_docker_access
   success "Docker Engine V2 installed. Docker now runs without sudo."
   state_set ".docker_installed" "true"
 }
@@ -132,17 +138,18 @@ setup_firewall() {
 # ── Media Directory ───────────────────────────────────────────────────────────
 
 setup_media_dir() {
-  if [[ -d "$MEDIA_DIR" ]]; then
-    success "Media directory '${MEDIA_DIR}' already exists."
-  else
+  if [[ ! -d "$MEDIA_DIR" ]]; then
     info "Creating shared media directory at ${MEDIA_DIR}..."
     sudo mkdir -p "$MEDIA_DIR"
-    sudo chown "${USER}:${USER}" "$MEDIA_DIR"
-    sudo chmod 775 "$MEDIA_DIR"
     success "Media directory created: ${MEDIA_DIR}"
+  else
+    success "Media directory '${MEDIA_DIR}' already exists."
   fi
-  mkdir -p "${MEDIA_DIR}/movies" "${MEDIA_DIR}/tv" "${MEDIA_DIR}/music" \
-           "${MEDIA_DIR}/books" "${MEDIA_DIR}/downloads"
+  sudo chown "${USER}:${USER}" "$MEDIA_DIR"
+  sudo chmod 775 "$MEDIA_DIR"
+  sudo mkdir -p "${MEDIA_DIR}/movies" "${MEDIA_DIR}/tv" "${MEDIA_DIR}/music" \
+               "${MEDIA_DIR}/books" "${MEDIA_DIR}/downloads"
+  sudo chown -R "${USER}:${USER}" "$MEDIA_DIR"
   success "Media sub-dirs ready: movies/ tv/ music/ books/ downloads/"
 }
 

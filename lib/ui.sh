@@ -99,7 +99,7 @@ run_task() {
   eval "$cmd" 2>&1 | tee -a "$LOG_FILE" | while IFS= read -r line; do
     # Remove ANSI codes for counting length correctly (optional, but good for raw text)
     # Print up to 70 chars to fit standard wide terminal
-    printf "  ${DIM}│${NC} %-70s ${DIM}│${NC}\n" "${line:0:70}"
+    printf "  ${DIM}│${NC} %s\n" "${line}"
   done
   local exit_code=${PIPESTATUS[0]}
   set -e
@@ -116,54 +116,117 @@ run_task() {
 # ── Info Viewer ───────────────────────────────────────────────────────────────
 show_container_info() {
   local name=$1
-  # Flush stdin to ignore any Enter key from the selection menu 
-  while read -t 0.1 -r -n 100; do :; done
-  
-  show_header
-  label "Detailed Container Diagnostics: ${name}"
-  echo
+  local action=""
 
-  # 1. Inspect Stats
-  local image;  image=$(docker inspect -f '{{.Config.Image}}' "$name" 2>/dev/null)
-  local status; status=$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null)
-  local ip;     ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$name" 2>/dev/null)
-  local uptime; uptime=$(docker inspect -f '{{.State.StartedAt}}' "$name" 2>/dev/null | cut -d. -f1 | sed 's/T/ /')
+  while true; do
+    while read -t 0.1 -r -n 100; do :; done
 
-  printf "  ${BOLD}${BLUE}Container Details${NC}\n"
-  printf "  ${DIM}%-14s${NC} %s\n" "Image:" "${image}"
-  printf "  ${DIM}%-14s${NC} %s\n" "Status:" "${status}"
-  printf "  ${DIM}%-14s${NC} %s\n" "IP Address:" "${ip:-N/A}"
-  printf "  ${DIM}%-14s${NC} %s\n" "Started At:" "${uptime}"
-  
-  # 2. Network Mapping
-  echo
-  printf "  ${BOLD}${LAVENDER}Port Mappings${NC}\n"
-  docker inspect "$name" --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{$p}} -> {{.HostPort}}{{println}}{{end}}{{end}}' | grep "\->" | sort -u | sed 's|^|    › |' | head -n 10
-  
-  # 3. First and Last Logs
-  echo
-  printf "  ${BOLD}${PEACH}Logs (First 20 & Last 20 lines)${NC}\n"
-  echo -e "  ${DIM}────────────────────────────────────────────────────────────────────────${NC}"
-  
-  # Display first 20 lines
-  docker logs "$name" 2>&1 | head -n 20 | while IFS= read -r line; do
-    printf "  ${DIM}│${NC} %s\n" "$line"
-  done
+    show_header
+    label "Container Inspector — ${name}"
+    echo
 
-  # Check if there are more than 20 lines to determine if we show the tail
-  if [[ $(docker logs "$name" 2>&1 | head -n 21 | wc -l) -eq 21 ]]; then
-    printf "  ${DIM}│${NC} ${DIM}... [Middle Logs Omitted] ...${NC}\n"
-    docker logs --tail 20 "$name" 2>&1 | while IFS= read -r line; do
-      printf "  ${DIM}│${NC} %s\n" "$line"
+    # 1. Basic details
+    local image status ip uptime restart_count
+    image=$(docker inspect -f '{{.Config.Image}}' "$name" 2>/dev/null || echo "N/A")
+    status=$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || echo "N/A")
+    ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$name" 2>/dev/null || echo "")
+    uptime=$(docker inspect -f '{{.State.StartedAt}}' "$name" 2>/dev/null | cut -d. -f1 | sed 's/T/ /')
+    restart_count=$(docker inspect -f '{{.RestartCount}}' "$name" 2>/dev/null || echo "0")
+
+    local status_col=$GREEN
+    [[ "$status" != "running" ]] && status_col=$RED
+
+    printf "  ${BOLD}${BLUE}  Details${NC}\n"
+    printf "  ${DIM}%-16s${NC} %s\n"              "Image:"         "${image}"
+    printf "  ${DIM}%-16s${NC} ${status_col}%s${NC}\n" "Status:"   "${status}"
+    printf "  ${DIM}%-16s${NC} %s\n"              "IP Address:"    "${ip:-N/A}"
+    printf "  ${DIM}%-16s${NC} %s\n"              "Started At:"    "${uptime}"
+    printf "  ${DIM}%-16s${NC} %s\n"              "Restarts:"      "${restart_count}"
+
+    # Known log-password patterns: container_name -> grep -oP pattern
+    declare -A _LOG_PASS_PATTERNS=(
+      [qbittorrent]='(?<=for this session: )\S+'
+    )
+
+    if [[ -n "${_LOG_PASS_PATTERNS[$name]:-}" ]]; then
+      local _pass
+      _pass=$(docker logs "$name" 2>&1 | grep -oP "${_LOG_PASS_PATTERNS[$name]}" | tail -n 1 || true)
+      echo
+      printf "  ${BOLD}${YELLOW}  Default Session Password${NC}\n"
+      if [[ -n "$_pass" ]]; then
+        printf "  ${DIM}%-16s${NC} ${BOLD}${GREEN}%s${NC}\n" "Password:" "${_pass}"
+      else
+        printf "  ${DIM}%-16s${NC} ${SUBTEXT}%s${NC}\n" "Password:" "Not found in logs yet"
+      fi
+    fi
+
+    # 2. Live resource usage
+    echo
+    printf "  ${BOLD}${TEAL}  Resource Usage${NC}\n"
+    local stats_line
+    stats_line=$(docker stats --no-stream --format \
+      "CPU: {{.CPUPerc}}   MEM: {{.MemUsage}} ({{.MemPerc}})   NET I/O: {{.NetIO}}   BLOCK I/O: {{.BlockIO}}" \
+      "$name" 2>/dev/null || echo "N/A (container not running)")
+    printf "  %s\n" "${stats_line}"
+
+    # 3. Port mappings
+    echo
+    printf "  ${BOLD}${LAVENDER}  Port Mappings${NC}\n"
+    local ports_out
+    ports_out=$(docker inspect "$name" \
+      --format '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{$p}} -> {{.HostPort}}{{println}}{{end}}{{end}}' \
+      2>/dev/null | grep "\->" | sort -u)
+    if [[ -n "$ports_out" ]]; then
+      echo "$ports_out" | sed 's|^|    › |'
+    else
+      echo "    › None"
+    fi
+
+    # 4. Volume mounts
+    echo
+    printf "  ${BOLD}${SAPPHIRE}  Volumes / Mounts${NC}\n"
+    local mounts_out
+    mounts_out=$(docker inspect "$name" \
+      --format '{{range .Mounts}}{{.Type}}: {{.Source}} -> {{.Destination}}{{println}}{{end}}' \
+      2>/dev/null)
+    if [[ -n "$mounts_out" ]]; then
+      echo "$mounts_out" | sed 's|^|    › |'
+    else
+      echo "    › None"
+    fi
+
+    # 5. Log preview (last 30 lines)
+    echo
+    printf "  ${BOLD}${PEACH}  Logs (last 30 lines)${NC}\n"
+    echo -e "  ${DIM}────────────────────────────────────────────────────────────────────────${NC}"
+    docker logs --tail 30 "$name" 2>&1 | while IFS= read -r line; do
+      printf "  ${DIM}│${NC} %s\n" "${line}"
     done
-  fi
-  echo -e "  ${DIM}────────────────────────────────────────────────────────────────────────${NC}"
-  
-  echo
-  # Wait for Enter clearly, flushing buffer first 
-  # (in case they pressed ENTER during the menu selection)
-  while read -t 0.1 -n 1 -r; do :; done 
-  prompt "Press [Enter] to return" _
+    echo -e "  ${DIM}────────────────────────────────────────────────────────────────────────${NC}"
+
+    echo
+    printf "  ${MAUVE}L)${NC} Follow live logs   ${MAUVE}R)${NC} Refresh   ${MAUVE}Enter)${NC} Back\n"
+    echo
+    while read -t 0.1 -n 1 -r; do :; done
+    printf "  ${MAUVE}?${NC} ${BOLD}Choice${NC}: "
+    read -r -n 1 action
+    echo
+
+    case "${action,,}" in
+      l)
+        echo
+        info "Following logs for '${name}' — Press Ctrl+C to stop"
+        echo -e "  ${DIM}────────────────────────────────────────────────────────────────────────${NC}"
+        docker logs -f --tail 50 "$name" 2>&1 || true
+        echo -e "  ${DIM}────────────────────────────────────────────────────────────────────────${NC}"
+        echo
+        printf "  ${MAUVE}──${NC} ${BOLD}Press [Enter] to continue${NC}: "
+        read -r _
+        ;;
+      r) continue ;;
+      *) break ;;
+    esac
+  done
 }
 
 # ── Resource Management ───────────────────────────────────────────────────────
@@ -187,7 +250,16 @@ check_resources() {
 
 is_port_free() {
   local port=$1
-  # Returns 0 (true) if grep finds nothing (port is free)
   ! ss -tuln | grep -q ":${port} "
+}
+
+find_free_port() {
+  local start=$1
+  local port=$start
+  while ! is_port_free "$port"; do
+    (( port++ ))
+    [[ $port -gt 65535 ]] && return 1
+  done
+  echo "$port"
 }
 
